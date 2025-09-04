@@ -10,7 +10,7 @@ import org.springframework.stereotype.Service;
 @Service
 public class PitchDetectionService {
 
-    private static final int SAMPLE_RATE = 44100;
+    private static final int SAMPLE_RATE = 48000;
     private static final String[] NOTE_NAMES = {"A", "A#", "B", "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#"};
 
     public PitchResponse detectPitch(double[] audioData) {
@@ -18,17 +18,19 @@ public class PitchDetectionService {
             return new PitchResponse(0, "", 0);
         }
 
-        // 1. Apply Hann window
-        double[] windowedData = applyHannWindow(audioData);
+        // Normalize the byte data (0-255) to float data (-1.0 to 1.0)
+        double[] normalizedData = new double[audioData.length];
+        for (int i = 0; i < audioData.length; i++) {
+            normalizedData[i] = (audioData[i] / 128.0) - 1.0;
+        }
 
-        // 2. Compute FFT
+        double[] windowedData = applyHannWindow(normalizedData);
+
         FastFourierTransformer transformer = new FastFourierTransformer(DftNormalization.STANDARD);
         Complex[] fft = transformer.transform(windowedData, TransformType.FORWARD);
 
-        // 3. Compute Harmonic Product Spectrum (HPS)
-        double fundamentalFrequency = findFundamentalFrequency(fft);
+        double fundamentalFrequency = findFundamentalFrequency(fft, audioData.length);
 
-        // 4. Find closest note and deviation
         return findClosestNote(fundamentalFrequency);
     }
 
@@ -40,35 +42,24 @@ public class PitchDetectionService {
         return windowed;
     }
 
-    private double findFundamentalFrequency(Complex[] fft) {
-        int maxIndex = 0;
-        double maxMag = 0.0;
-
-        double[] magnitude = new double[fft.length / 2];
-
-        for (int i = 0; i < magnitude.length; i++) {
+    private double findFundamentalFrequency(Complex[] fft, int fftSize) {
+        int magnitudeLength = fft.length / 2;
+        double[] magnitude = new double[magnitudeLength];
+        for (int i = 0; i < magnitudeLength; i++) {
             magnitude[i] = fft[i].abs();
         }
 
-        // HPS
-        int harmonics = 5;
-        double[] hps = new double[magnitude.length];
-        System.arraycopy(magnitude, 0, hps, 0, magnitude.length);
-
-        for (int h = 2; h <= harmonics; h++) {
-            for (int i = 0; i < magnitude.length / h; i++) {
-                hps[i] *= magnitude[i * h];
-            }
-        }
-
-        for (int i = 0; i < hps.length; i++) {
-            if (hps[i] > maxMag) {
-                maxMag = hps[i];
+        // Find the peak in the magnitude spectrum
+        int maxIndex = 0;
+        double maxMag = 0.0;
+        for (int i = 1; i < magnitudeLength; i++) { // Start from 1 to ignore DC component
+            if (magnitude[i] > maxMag) {
+                maxMag = magnitude[i];
                 maxIndex = i;
             }
         }
 
-        return (double) maxIndex * SAMPLE_RATE / (fft.length * 2);
+        return (double) maxIndex * SAMPLE_RATE / fftSize;
     }
 
     private PitchResponse findClosestNote(double frequency) {
@@ -81,8 +72,10 @@ public class PitchDetectionService {
         double h = Math.round(12 * Math.log(frequency / c0) / Math.log(2));
         double closestFreq = c0 * Math.pow(2, h / 12.0);
         int noteIndex = (int) (h % 12);
+        if (noteIndex < 0) {
+            noteIndex += 12;
+        }
         String note = NOTE_NAMES[noteIndex];
-
         double deviation = 1200 * Math.log(frequency / closestFreq) / Math.log(2);
 
         return new PitchResponse(frequency, note, deviation);
